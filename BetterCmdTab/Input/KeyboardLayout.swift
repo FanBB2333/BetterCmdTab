@@ -111,7 +111,18 @@ enum KeyboardLayout {
         latinLayoutData.withLock { $0 = asciiCapableLayoutData() }
     }
 
+    /// Include disabled sources: US need not be in the user's Input Sources list.
+    static func englishLayoutData() -> Data? {
+        let filter = [kTISPropertyInputSourceID as String: "com.apple.keylayout.US"] as CFDictionary
+        guard let sources = TISCreateInputSourceList(filter, true)?.takeRetainedValue() as? [TISInputSource],
+              let source = sources.first else { return nil }
+        return layoutData(from: source)
+    }
+
     static func currentOrFallbackLayoutData() -> Data? {
+        if UserDefaults.standard.bool(forKey: Preferences.Keys.alwaysUseEnglishKeyboard) {
+            return englishLayoutData()
+        }
         if let src = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
            let data = layoutData(from: src) {
             return data
@@ -128,6 +139,9 @@ enum KeyboardLayout {
 
     /// The most recently used ASCII-capable keyboard layout, the current one when it is ASCII-capable.
     static func asciiCapableLayoutData() -> Data? {
+        if UserDefaults.standard.bool(forKey: Preferences.Keys.alwaysUseEnglishKeyboard) {
+            return englishLayoutData()
+        }
         guard let src = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue() else { return nil }
         return layoutData(from: src)
     }
