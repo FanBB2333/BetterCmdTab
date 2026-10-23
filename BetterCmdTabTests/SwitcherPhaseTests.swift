@@ -42,6 +42,40 @@ struct SwitcherReleaseMissedTests {
         // Both triggers disabled → nothing to hold, so the release is always missed.
         #expect(SwitcherController.releaseAlreadyMissed(flags: [.maskCommand], appMask: nil, windowMask: nil))
     }
+
+    @Test func swallowedModifierDown_stillHeldViaHIDState() {
+        // Another app's HID tap ate the ⌘-down: session reads ⌘ up, HID has it, so it is a hold.
+        #expect(!SwitcherController.holdReleaseMissed(
+            session: [], hid: .maskCommand, secureInputActive: false, liveTriggerHeld: true,
+            scopedMask: nil, appMask: .maskCommand, windowMask: .maskCommand
+        ))
+        #expect(!SwitcherController.holdReleaseMissed(
+            session: [], hid: .maskAlternate, secureInputActive: false, liveTriggerHeld: true,
+            scopedMask: .maskAlternate, appMask: .maskCommand, windowMask: .maskCommand
+        ))
+    }
+
+    @Test func normalInput_keepsSessionOnlyHold() {
+        #expect(SwitcherController.holdFlags(session: .maskCommand, hid: [], secureInputActive: false) == .maskCommand)
+    }
+
+    @Test func secureInput_readsSessionStateOnly() {
+        #expect(SwitcherController.holdFlags(session: [], hid: .maskCommand, secureInputActive: true) == [])
+        #expect(SwitcherController.holdFlags(session: .maskCommand, hid: [], secureInputActive: true) == .maskCommand)
+    }
+}
+
+@Suite("SkyLight event records")
+struct SkyLightEventRecordTests {
+    @Test func makeKeyRecord_matchesYabaiLayout() {
+        let record = PrivateAPI.makeKeyRecord(type: 0x01, wid: 0x1234_5678)
+        #expect(record.count == 0xf8)
+        #expect(record[0x04] == 0xf8)
+        #expect(record[0x08] == 0x01)
+        #expect(record[0x20..<0x30].allSatisfy { $0 == 0xff })
+        #expect(record[0x3a] == 0x10)
+        #expect(Array(record[0x3c..<0x40]) == [0x78, 0x56, 0x34, 0x12])
+    }
 }
 
 @Suite("Scoped modifier release gate")
