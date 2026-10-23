@@ -1431,6 +1431,18 @@ final class SwitcherController: SwitcherViewDelegate {
         return !(appHeld || windowHeld)
     }
 
+    /// Pure: the modifier state the missed-release check reads. Another app's
+    /// active HID-level event tap can swallow the hardware modifier-down before
+    /// the session sees it, so the session state reads the hold modifier up
+    /// while it is held — until a mouse move carries the flags in — and every
+    /// chord commits as a quick tap with no panel. The HID state still has the
+    /// key. Secure input keeps the session state alone, the read issue #16 was
+    /// tuned on.
+    nonisolated static func holdFlags(session: CGEventFlags, hid: CGEventFlags,
+                                      secureInputActive: Bool) -> CGEventFlags {
+        secureInputActive ? session : session.union(hid)
+    }
+
     /// Pure: should the `.visible` release-to-commit liveness backstop
     /// (`visibleReleaseBackstop`) be armed? Only when a panel is actually on
     /// screen (`.visible`) for a held-chord keyboard open (`primedByHeldChord` —
@@ -1523,7 +1535,11 @@ final class SwitcherController: SwitcherViewDelegate {
     /// Live check of `releaseAlreadyMissed` against the current physical modifier
     /// state (`CGEventSource.flagsState` keeps reporting under Secure Event Input).
     private func holdReleaseAlreadyMissed() -> Bool {
-        let flags = CGEventSource.flagsState(.combinedSessionState)
+        let flags = Self.holdFlags(
+            session: CGEventSource.flagsState(.combinedSessionState),
+            hid: secureInputActive ? [] : CGEventSource.flagsState(.hidSystemState),
+            secureInputActive: secureInputActive
+        )
         if let scopedHoldModifierMask {
             return Self.activeModifierReleased(flags: flags, mask: scopedHoldModifierMask)
         }

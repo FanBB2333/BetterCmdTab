@@ -42,6 +42,22 @@ struct SwitcherReleaseMissedTests {
         // Both triggers disabled → nothing to hold, so the release is always missed.
         #expect(SwitcherController.releaseAlreadyMissed(flags: [.maskCommand], appMask: nil, windowMask: nil))
     }
+
+    @Test func swallowedModifierDown_stillHeldViaHIDState() {
+        // Another app's HID-level tap ate the ⌘-down: the session state reads ⌘
+        // up while the HID state has it. Under normal input that is a hold, not
+        // a missed release.
+        let flags = SwitcherController.holdFlags(session: [], hid: .maskCommand, secureInputActive: false)
+        #expect(!SwitcherController.releaseAlreadyMissed(flags: flags, appMask: .maskCommand, windowMask: .maskCommand))
+        // Both states up → the release really was missed.
+        let up = SwitcherController.holdFlags(session: [], hid: [], secureInputActive: false)
+        #expect(SwitcherController.releaseAlreadyMissed(flags: up, appMask: .maskCommand, windowMask: .maskCommand))
+    }
+
+    @Test func secureInput_readsSessionStateOnly() {
+        #expect(SwitcherController.holdFlags(session: [], hid: .maskCommand, secureInputActive: true) == [])
+        #expect(SwitcherController.holdFlags(session: .maskCommand, hid: [], secureInputActive: true) == .maskCommand)
+    }
 }
 
 @Suite("Scoped modifier release gate")
