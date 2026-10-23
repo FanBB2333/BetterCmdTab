@@ -556,6 +556,29 @@ enum PrivateAPI {
         let postErr = bytes.withUnsafeMutableBufferPointer { buf -> CGError in
             postEvent(&psn, buf.baseAddress!)
         }
+        makeKeyWindow(psn: &psn, wid: wid, postEvent: postEvent)
         return setErr == .success && postErr == .success
+    }
+
+    /// The raise fronts the process but does not always make the window key:
+    /// when a switch commits while our panel holds key focus, the target draws
+    /// inactive and an input method shows its candidates in a screen corner
+    /// until the user clicks. Post the record pair the WindowServer sends on
+    /// that click, as yabai and AltTab do.
+    private static func makeKeyWindow(psn: inout ProcessSerialNumber, wid: CGWindowID,
+                                      postEvent: (UnsafeMutablePointer<ProcessSerialNumber>,
+                                                  UnsafeMutablePointer<UInt8>) -> CGError) {
+        var bytes = [UInt8](repeating: 0, count: 0xf8)
+        bytes[0x04] = 0xf8
+        bytes[0x3a] = 0x10
+        var widLE = wid
+        withUnsafeBytes(of: &widLE) { src in
+            for i in 0..<4 { bytes[0x3c + i] = src[i] }
+        }
+        for i in 0x20..<0x30 { bytes[i] = 0xff }
+        for type: UInt8 in [0x01, 0x02] {
+            bytes[0x08] = type
+            _ = bytes.withUnsafeMutableBufferPointer { postEvent(&psn, $0.baseAddress!) }
+        }
     }
 }
