@@ -223,8 +223,9 @@ final class SwitcherController: SwitcherViewDelegate {
     /// (the tap was deaf across the real ⌘-release, leaving the modifier reported as
     /// still held — which defeats every flagsState-based recovery, incl. PR #67)
     /// still self-heals and the tap stops swallowing ⌘W/⌘Q (issue #16). Under NORMAL
-    /// input flagsState is reliable, so this stamp drives nothing — a held ⌘ keeps
-    /// the panel up for as long as the user wants, with no idle ceiling.
+    /// input the session ∪ HID state (`holdFlags`) is reliable, so this stamp drives
+    /// nothing — a held ⌘ keeps the panel up for as long as the user wants, with no
+    /// idle ceiling.
     private var lastVisibleActivity: Date?
     /// When the current panel became visible. Unlike `lastVisibleActivity` this is
     /// never bumped afterwards, so it measures the true age of the open, which is
@@ -1431,16 +1432,40 @@ final class SwitcherController: SwitcherViewDelegate {
         return !(appHeld || windowHeld)
     }
 
-    /// Pure: the modifier state the missed-release check reads. Another app's
-    /// active HID-level event tap can swallow the hardware modifier-down before
-    /// the session sees it, so the session state reads the hold modifier up
-    /// while it is held — until a mouse move carries the flags in — and every
-    /// chord commits as a quick tap with no panel. The HID state still has the
-    /// key. Secure input keeps the session state alone, the read issue #16 was
-    /// tuned on.
-    nonisolated static func holdFlags(session: CGEventFlags, hid: CGEventFlags,
-                                      secureInputActive: Bool) -> CGEventFlags {
+    /// Pure: another app's HID tap can swallow ⌘-down, so the session reads it up while held; HID still has it.
+    /// Under secure input only the session state counts, as issue #16 was tuned on it.
+    nonisolated static func holdFlags(
+        session: CGEventFlags,
+        hid: CGEventFlags,
+        secureInputActive: Bool
+    ) -> CGEventFlags {
         secureInputActive ? session : session.union(hid)
+    }
+
+    /// Pure: the whole missed-release decision over the live reads, so the HID merge stays testable.
+    nonisolated static func holdReleaseMissed(
+        session: CGEventFlags,
+        hid: CGEventFlags,
+        secureInputActive: Bool,
+        liveTriggerHeld: Bool,
+        scopedMask: CGEventFlags?,
+        appMask: CGEventFlags?,
+        windowMask: CGEventFlags?
+    ) -> Bool {
+        let flags = holdFlags(session: session, hid: hid, secureInputActive: secureInputActive)
+        if let scopedMask {
+            return activeModifierReleased(flags: flags, mask: scopedMask)
+        }
+        // With secure input OFF the tap sees real key/flag events, so its last live
+        // hold state is truthful — unlike `CGEventSource.flagsState`, which can latch
+        // ⌘-held across a secure-input flap (issue #16). Prefer it: a "released"
+        // reading recovers a weld the lying flagsState would hide, and the tap only
+        // reports released after a genuine ⌘-up, so it can't yank a real hold. Stale
+        // while the tap is deaf under secure input, so trust it only when SEI is off.
+        if !secureInputActive && !liveTriggerHeld {
+            return true
+        }
+        return releaseAlreadyMissed(flags: flags, appMask: appMask, windowMask: windowMask)
     }
 
     /// Pure: should the `.visible` release-to-commit liveness backstop
@@ -1501,8 +1526,9 @@ final class SwitcherController: SwitcherViewDelegate {
     /// also for a bounded window AFTER an SEI flap clears: a ⌘-release dropped during
     /// the deaf window can leave the latch set past the SEI→OFF edge, and the
     /// SEI-gated force-close alone would never reach it (`withinPostSecureWindow`).
-    /// Under NORMAL input with no recent flap, flagsState is authoritative: a missed
-    /// ⌘-release is recovered by the fast path within one tick, so a panel still on
+    /// Under NORMAL input with no recent flap, the session ∪ HID state (`holdFlags`)
+    /// is authoritative: a missed ⌘-release is recovered by the fast path within one
+    /// tick, so a panel still on
     /// screen means ⌘ is genuinely held — never force-close it out from under a user
     /// holding ⌘ and reading the panel without steering it. Isolated so the gate
     /// stays unit-testable.
@@ -1532,31 +1558,17 @@ final class SwitcherController: SwitcherViewDelegate {
         primedByHeldChord && !scopedChord && !quickReleaseParksSticky
     }
 
-    /// Live check of `releaseAlreadyMissed` against the current physical modifier
-    /// state (`CGEventSource.flagsState` keeps reporting under Secure Event Input).
+    /// Live check of `holdReleaseMissed`: session state, plus the HID state outside secure input.
     private func holdReleaseAlreadyMissed() -> Bool {
-        let flags = Self.holdFlags(
-            session: CGEventSource.flagsState(.combinedSessionState),
-            hid: secureInputActive ? [] : CGEventSource.flagsState(.hidSystemState),
-            secureInputActive: secureInputActive
-        )
-        if let scopedHoldModifierMask {
-            return Self.activeModifierReleased(flags: flags, mask: scopedHoldModifierMask)
-        }
         // A disabled trigger (nil) contributes no mask, so it never counts as held.
         let appTrigger = Self.carbonTrigger(for: .switchApps)
         let windowTrigger = Self.carbonTrigger(for: .switchWindows)
-        // With secure input OFF the tap sees real key/flag events, so its last live
-        // hold state is truthful — unlike `CGEventSource.flagsState`, which can latch
-        // ⌘-held across a secure-input flap (issue #16). Prefer it: a "released"
-        // reading recovers a weld the lying flagsState would hide, and the tap only
-        // reports released after a genuine ⌘-up, so it can't yank a real hold. Stale
-        // while the tap is deaf under secure input, so trust it only when SEI is off.
-        if !secureInputActive && !hotkey.liveTriggerHoldHeld() {
-            return true
-        }
-        return Self.releaseAlreadyMissed(
-            flags: flags,
+        return Self.holdReleaseMissed(
+            session: CGEventSource.flagsState(.combinedSessionState),
+            hid: CGEventSource.flagsState(.hidSystemState),
+            secureInputActive: secureInputActive,
+            liveTriggerHeld: hotkey.liveTriggerHoldHeld(),
+            scopedMask: scopedHoldModifierMask,
             appMask: appTrigger.map { Self.holdMask(for: $0.carbonModifiers) },
             windowMask: windowTrigger.map { Self.holdMask(for: $0.carbonModifiers) }
         )
@@ -2927,8 +2939,9 @@ final class SwitcherController: SwitcherViewDelegate {
         // that can stick reporting ⌘-held, so the ⌘-up is lost AND the fast path
         // above can't see it — the panel welds open with the tap swallowing ⌘W/⌘Q.
         // The no-interaction ceiling is the only flagsState-independent way out
-        // (issue #16). Under NORMAL input flagsState is authoritative: any dropped
-        // release is recovered by the fast path within a tick, so a still-visible
+        // (issue #16). Under NORMAL input the session ∪ HID state (`holdFlags`) is
+        // authoritative: any dropped release is recovered by the fast path within a
+        // tick, so a still-visible
         // panel means ⌘ is GENUINELY held — keep it up. Force-closing there yanked
         // the panel out from under a user holding ⌘ and reading it without steering.
         guard let last = lastVisibleActivity else { return }
@@ -6358,7 +6371,11 @@ final class SwitcherController: SwitcherViewDelegate {
     private func handleModifierRelease() {
         if let scopedHoldModifierMask,
            !Self.activeModifierReleased(
-               flags: CGEventSource.flagsState(.combinedSessionState),
+               flags: Self.holdFlags(
+                   session: CGEventSource.flagsState(.combinedSessionState),
+                   hid: CGEventSource.flagsState(.hidSystemState),
+                   secureInputActive: secureInputActive
+               ),
                mask: scopedHoldModifierMask
            ) { return }
         // Drill-in commits on release: the user picks the highlighted tab the

@@ -44,14 +44,19 @@ struct SwitcherReleaseMissedTests {
     }
 
     @Test func swallowedModifierDown_stillHeldViaHIDState() {
-        // Another app's HID-level tap ate the ⌘-down: the session state reads ⌘
-        // up while the HID state has it. Under normal input that is a hold, not
-        // a missed release.
-        let flags = SwitcherController.holdFlags(session: [], hid: .maskCommand, secureInputActive: false)
-        #expect(!SwitcherController.releaseAlreadyMissed(flags: flags, appMask: .maskCommand, windowMask: .maskCommand))
-        // Both states up → the release really was missed.
-        let up = SwitcherController.holdFlags(session: [], hid: [], secureInputActive: false)
-        #expect(SwitcherController.releaseAlreadyMissed(flags: up, appMask: .maskCommand, windowMask: .maskCommand))
+        // Another app's HID tap ate the ⌘-down: session reads ⌘ up, HID has it, so it is a hold.
+        #expect(!SwitcherController.holdReleaseMissed(
+            session: [], hid: .maskCommand, secureInputActive: false, liveTriggerHeld: true,
+            scopedMask: nil, appMask: .maskCommand, windowMask: .maskCommand
+        ))
+        #expect(!SwitcherController.holdReleaseMissed(
+            session: [], hid: .maskAlternate, secureInputActive: false, liveTriggerHeld: true,
+            scopedMask: .maskAlternate, appMask: .maskCommand, windowMask: .maskCommand
+        ))
+    }
+
+    @Test func normalInput_keepsSessionOnlyHold() {
+        #expect(SwitcherController.holdFlags(session: .maskCommand, hid: [], secureInputActive: false) == .maskCommand)
     }
 
     @Test func secureInput_readsSessionStateOnly() {
