@@ -528,10 +528,11 @@ enum PrivateAPI {
     /// they're not on; SkyLight's private `_SLPSSetFrontProcessWithOptions` +
     /// `SLPSPostEventRecordTo` synthetic event do.
     ///
-    /// Returns true when both SLPS calls dispatched successfully — the caller
-    /// can then skip the `NSWorkspace.openApplication` fallback (which would
-    /// otherwise race and reset focus to the app's last-active window rather
-    /// than the one we just raised).
+    /// Returns true when the front-process call and the raise record dispatched;
+    /// the key-window pair is best effort. The caller can then skip the
+    /// `NSWorkspace.openApplication` fallback (which would otherwise race and
+    /// reset focus to the app's last-active window rather than the one we just
+    /// raised).
     @discardableResult
     static func raiseWindow(pid: pid_t, wid: CGWindowID) -> Bool {
         guard wid != 0 else { return false }
@@ -544,41 +545,32 @@ enum PrivateAPI {
 
         // Post a synthetic event so the window server promotes our raise
         // request. Without this, fullscreen windows often stay backgrounded.
-        var bytes = [UInt8](repeating: 0, count: 0xf8)
-        bytes[0x04] = 0xf8
-        bytes[0x08] = 0x0d
-        bytes[0x3a] = 0x80
-        var widLE = wid
-        withUnsafeBytes(of: &widLE) { src in
-            for i in 0..<4 { bytes[0x3c + i] = src[i] }
+        var raise = eventRecord(type: 0x0d, flags: 0x80, wid: wid)
+        raise[0x20] = 0x02
+        let postErr = raise.withUnsafeMutableBufferPointer { postEvent(&psn, $0.baseAddress!) }
+
+        // The raise does not always make the window key; post the click record pair, as yabai and AltTab do.
+        // 0x01 then 0x02: the press and release records of a click (yabai window_manager_make_key_window).
+        for type: UInt8 in [0x01, 0x02] {
+            var record = makeKeyRecord(type: type, wid: wid)
+            _ = record.withUnsafeMutableBufferPointer { postEvent(&psn, $0.baseAddress!) }
         }
-        bytes[0x20] = 0x02
-        let postErr = bytes.withUnsafeMutableBufferPointer { buf -> CGError in
-            postEvent(&psn, buf.baseAddress!)
-        }
-        makeKeyWindow(psn: &psn, wid: wid, postEvent: postEvent)
         return setErr == .success && postErr == .success
     }
 
-    /// The raise fronts the process but does not always make the window key:
-    /// when a switch commits while our panel holds key focus, the target draws
-    /// inactive and an input method shows its candidates in a screen corner
-    /// until the user clicks. Post the record pair the WindowServer sends on
-    /// that click, as yabai and AltTab do.
-    private static func makeKeyWindow(psn: inout ProcessSerialNumber, wid: CGWindowID,
-                                      postEvent: (UnsafeMutablePointer<ProcessSerialNumber>,
-                                                  UnsafeMutablePointer<UInt8>) -> CGError) {
+    /// A 0xf8-byte SkyLight event record addressed to `wid`.
+    static func eventRecord(type: UInt8, flags: UInt8, wid: CGWindowID) -> [UInt8] {
         var bytes = [UInt8](repeating: 0, count: 0xf8)
         bytes[0x04] = 0xf8
-        bytes[0x3a] = 0x10
-        var widLE = wid
-        withUnsafeBytes(of: &widLE) { src in
-            for i in 0..<4 { bytes[0x3c + i] = src[i] }
-        }
-        for i in 0x20..<0x30 { bytes[i] = 0xff }
-        for type: UInt8 in [0x01, 0x02] {
-            bytes[0x08] = type
-            _ = bytes.withUnsafeMutableBufferPointer { postEvent(&psn, $0.baseAddress!) }
-        }
+        bytes[0x08] = type
+        bytes[0x3a] = flags
+        withUnsafeBytes(of: wid.littleEndian) { bytes.replaceSubrange(0x3c..<0x40, with: $0) }
+        return bytes
+    }
+
+    static func makeKeyRecord(type: UInt8, wid: CGWindowID) -> [UInt8] {
+        var record = eventRecord(type: type, flags: 0x10, wid: wid)
+        for i in 0x20..<0x30 { record[i] = 0xff }
+        return record
     }
 }
